@@ -27,8 +27,10 @@ oauth_config:
       - users:read             # get_user by ID
       - users:read.email       # get_user by email (users.lookupByEmail)
       - files:read             # files.info + download url_private_download
-      # --- optional write (draft/send) ---
+      # --- optional write (draft/send/attach) ---
       - chat:write             # send_message
+      - files:write            # send_message with file_path (upload attachments)
+      - im:write               # open a DM to attach a file to it (by user ID)
 
 settings:
   org_deploy_enabled: false

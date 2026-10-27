@@ -14,6 +14,7 @@ Every tool takes a required `workspace` argument naming an entry in your config.
 | Tool | What it does |
 |------|--------------|
 | `list_workspaces` | List configured workspaces (names + descriptions). Start here. |
+| `check_access(workspace)` | Report which OAuth scopes a token has and which tools work. |
 | `search_messages(workspace, query, count, sort)` | Search messages (Slack operators, e.g. `in:#chan from:@me`). |
 | `read_channel(workspace, channel, limit, oldest, latest)` | Channel history by ID or `#name`. |
 | `read_thread(workspace, channel, thread_ts, limit)` | All replies in a thread. |
@@ -21,7 +22,7 @@ Every tool takes a required `workspace` argument naming an entry in your config.
 | `get_user(workspace, user)` | Look up a user by ID or email. |
 | `download_file(workspace, file_id)` | Download a file (see below). |
 | `draft_message(workspace, channel, text)` | Preview a message; **never sends**. |
-| `send_message(workspace, channel, text, confirm, thread_ts)` | Sends **only** with `confirm=True`; otherwise echoes the target. |
+| `send_message(workspace, channel, text, confirm, thread_ts, file_path, file_title)` | Sends **only** with `confirm=True`; otherwise echoes the target. Pass `file_path` to attach a file. |
 
 Messages include file metadata: `id`, `name`, `mimetype`, `size`, `filetype`.
 
@@ -36,6 +37,18 @@ Messages include file metadata: `id`, `name`, `mimetype`, `size`, `filetype`.
 (`C…`/`G…`), a DM/IM ID (`D…`), a `#name`, or a **user ID** (`U…`/`W…`). Passing a
 user ID to `send_message` opens a direct message to that person — pass **your own**
 user ID to DM yourself (get it from `get_user(workspace, "you@example.com")`).
+
+**Attachments.** Give `send_message` a `file_path` to upload a local file. If `text`
+is also present it becomes the file's comment, so one call posts the message and the
+attachment together; `confirm=True` is still required. Uploading needs the
+`files:write` scope (and `im:write` to attach to a DM addressed by a user ID) — see
+the reinstall note below.
+
+**Scope awareness.** The server reads each token's granted scopes from Slack's
+`x-oauth-scopes` header (cached per workspace) and checks them before each call. If a
+scope is missing it returns a clear, actionable message naming the scope and workspace
+instead of a cryptic Slack `missing_scope` error — and only that workspace/tool is
+affected; the others keep working. `check_access(workspace)` reports the full picture.
 
 ---
 
@@ -69,19 +82,29 @@ workspace (selecting the right one in the picker each time).
 The scopes requested (all **user** scopes, no bot token):
 `search:read`, `channels:history`, `groups:history`, `im:history`, `mpim:history`,
 `channels:read`, `groups:read`, `im:read`, `mpim:read`, `users:read`,
-`users:read.email`, `files:read`, `chat:write`.
+`users:read.email`, `files:read`, `chat:write`, `files:write`, `im:write`.
+
+The last two (`files:write`, `im:write`) are only needed to **upload attachments**
+with `send_message(file_path=…)`. Everything else works without them.
 
 > **Which token?** You want the **User OAuth Token** (`xoxp-`) only.
 > - ❌ **Don't** generate an *app-level token* (`xapp-`) — that's for Socket Mode,
 >   which this server doesn't use (the manifest sets `socket_mode_enabled: false`).
 > - ❌ Not a *bot token* (`xoxb-`), not a browser token (`xoxc-`/`xoxd-`).
 >
-> On the review screen, **"What it can do in Slack (13)"** = the 13 scopes above;
+> On the review screen, **"What it can do in Slack (15)"** = the 15 scopes above;
 > **"What it can respond to in Slack (0)"** = event subscriptions, which this
 > server doesn't use — `0` is correct.
 >
 > `search:read` and reading history only cover channels **your account can already
 > see** — private channels/DMs require you to be a member.
+
+> **Adding scopes to an app you already installed** (e.g. turning on attachments
+> later): open the app at <https://api.slack.com/apps> → **App Manifest**, paste the
+> updated `manifest.yaml`, save, then **OAuth & Permissions → Reinstall to Workspace**
+> and copy the **new** `xoxp-` token into `workspaces.toml`. Do this per workspace.
+> Until then, `check_access` shows the scope as missing and upload calls fail with a
+> clear message — read-only tools keep working.
 
 ## 3. Configure tokens
 

@@ -145,6 +145,86 @@ def _wrap_slack_errors(fn):
 
 
 # ---------------------------------------------------------------------------
+# Scope awareness
+# ---------------------------------------------------------------------------
+# Scopes each tool needs, used by check_access for reporting. "all" = every
+# scope required; "any" = at least one suffices (e.g. history scopes differ by
+# channel type). This is also the source of truth for the guards below.
+_TOOL_SCOPES: dict[str, dict[str, list[str]]] = {
+    "list_workspaces": {},
+    "search_messages": {"all": ["search:read"]},
+    "read_channel": {"any": ["channels:history", "groups:history", "im:history", "mpim:history"]},
+    "read_thread": {"any": ["channels:history", "groups:history", "im:history", "mpim:history"]},
+    "list_channels": {"any": ["channels:read", "groups:read", "im:read", "mpim:read"]},
+    "get_user": {"all": ["users:read"]},
+    "download_file": {"all": ["files:read"]},
+    "draft_message": {},
+    "send_message": {"all": ["chat:write"]},
+    "send_message (with file_path)": {"all": ["chat:write", "files:write"]},
+}
+
+# workspace -> granted scopes (cached). One missing scope on one workspace must
+# never break the others, so this is per-workspace and lazily populated.
+_scopes_cache: dict[str, frozenset[str]] = {}
+
+
+def _granted_scopes(workspace: str) -> frozenset[str]:
+    """Return the OAuth scopes this workspace's token actually has (cached).
+
+    Slack echoes the token's scopes in the `x-oauth-scopes` response header on
+    every Web API call; auth.test is the cheapest call to read them from.
+    """
+    if workspace in _scopes_cache:
+        return _scopes_cache[workspace]
+    resp = _client(workspace).auth_test()
+    raw = (resp.headers or {}).get("x-oauth-scopes", "") or ""
+    scopes = frozenset(s.strip() for s in raw.split(",") if s.strip())
+    _scopes_cache[workspace] = scopes
+    return scopes
+
+
+def _require_scopes(
+    workspace: str, scopes: list[str], action: str, *, any_of: bool = False
+) -> None:
+    """Raise a clear, actionable ValueError if the token lacks the needed scope(s).
+
+    Fails gracefully so a missing scope produces a readable message instead of a
+    cryptic Slack `missing_scope` error, and only for the workspace in question.
+    """
+    if not scopes:
+        return
+    granted = _granted_scopes(workspace)
+    if any_of:
+        if any(s in granted for s in scopes):
+            return
+        need = "one of " + ", ".join(scopes)
+    else:
+        missing = [s for s in scopes if s not in granted]
+        if not missing:
+            return
+        need = ", ".join(missing)
+    raise ValueError(
+        f"{action} needs the scope {need} on workspace '{workspace}', but this "
+        f"token doesn't have it. Add the scope to the Slack app (manifest.yaml), "
+        f"reinstall the app for this workspace, then paste the new xoxp- token into "
+        f"workspaces.toml. Other workspaces and tools are unaffected."
+    )
+
+
+def _conversation_for_upload(workspace: str, channel_id: str) -> str:
+    """Return a conversation ID suitable for a file upload.
+
+    chat.postMessage can auto-open a DM from a user ID, but file uploads need a
+    real conversation ID, so open the DM explicitly when given a user ID.
+    """
+    if channel_id[:1] in ("U", "W"):
+        _require_scopes(workspace, ["im:write"], "Opening a direct message to attach a file")
+        resp = _client(workspace).conversations_open(users=channel_id)
+        return resp["channel"]["id"]
+    return channel_id
+
+
+# ---------------------------------------------------------------------------
 # Read tools
 # ---------------------------------------------------------------------------
 @mcp.tool()
@@ -158,6 +238,36 @@ def list_workspaces() -> list[dict[str, str]]:
         {"workspace": ws.name, "description": ws.description}
         for ws in sorted(load_workspaces().values(), key=lambda w: w.name)
     ]
+
+
+@mcp.tool()
+@_wrap_slack_errors
+def check_access(workspace: str) -> dict[str, Any]:
+    """Report the OAuth scopes a workspace's token has, and which tools it can use.
+
+    Call this to confirm the Slack app was installed with the scopes a feature
+    needs — e.g. `files:write` (and `im:write` for DM attachments) before using
+    send_message with a file_path. Scope data comes from Slack's `x-oauth-scopes`
+    header; nothing is sent to the workspace.
+
+    Args:
+        workspace: configured workspace name.
+    """
+    granted = _granted_scopes(workspace)
+    tools: dict[str, dict[str, Any]] = {}
+    for name, req in _TOOL_SCOPES.items():
+        all_req = req.get("all", [])
+        any_req = req.get("any", [])
+        missing = [s for s in all_req if s not in granted]
+        any_ok = (not any_req) or any(s in granted for s in any_req)
+        if any_req and not any_ok:
+            missing.append("one of: " + ", ".join(any_req))
+        tools[name] = {"available": not missing, "missing": missing}
+    return {
+        "workspace": workspace,
+        "granted_scopes": sorted(granted),
+        "tools": tools,
+    }
 
 
 @mcp.tool()
@@ -176,6 +286,7 @@ def search_messages(
         count: max matches to return (1-100).
         sort: 'score' (relevance) or 'timestamp' (newest first).
     """
+    _require_scopes(workspace, ["search:read"], "Searching messages")
     client = _client(workspace)
     resp = client.search_messages(query=query, count=max(1, min(count, 100)), sort=sort)
     matches = resp.get("messages", {}).get("matches", [])
@@ -212,6 +323,9 @@ def read_channel(
         oldest: optional lower-bound Slack ts (inclusive).
         latest: optional upper-bound Slack ts.
     """
+    _require_scopes(
+        workspace, _TOOL_SCOPES["read_channel"]["any"], "Reading channel history", any_of=True
+    )
     client = _client(workspace)
     channel_id = _resolve_channel(workspace, channel)
     resp = client.conversations_history(
@@ -244,6 +358,9 @@ def read_thread(
         thread_ts: the ts of the thread's parent message.
         limit: max messages (1-1000).
     """
+    _require_scopes(
+        workspace, _TOOL_SCOPES["read_thread"]["any"], "Reading a thread", any_of=True
+    )
     client = _client(workspace)
     channel_id = _resolve_channel(workspace, channel)
     resp = client.conversations_replies(
@@ -275,6 +392,9 @@ def list_channels(
         types: comma-separated: public_channel, private_channel, mpim, im.
         limit: max channels to return after filtering (1-1000).
     """
+    _require_scopes(
+        workspace, _TOOL_SCOPES["list_channels"]["any"], "Listing channels", any_of=True
+    )
     client = _client(workspace)
     needle = name_filter.lower().lstrip("#")
     out: list[dict[str, Any]] = []
@@ -312,6 +432,8 @@ def get_user(workspace: str, user: str) -> dict[str, Any]:
         workspace: configured workspace name.
         user: a user ID (U…/W…) or an email address.
     """
+    needed = ["users:read", "users:read.email"] if "@" in user else ["users:read"]
+    _require_scopes(workspace, needed, "Looking up a user")
     client = _client(workspace)
     if "@" in user:
         resp = client.users_lookupByEmail(email=user)
@@ -380,6 +502,7 @@ def download_file(workspace: str, file_id: str) -> list[Any]:
         workspace: configured workspace name.
         file_id: the Slack file ID (e.g. 'F0123ABCD'), as found in message file metadata.
     """
+    _require_scopes(workspace, ["files:read"], "Downloading a file")
     ws = get_workspace(workspace)
     client = _client(workspace)
     info = client.files_info(file=file_id)
@@ -460,27 +583,48 @@ def send_message(
     text: str,
     confirm: bool = False,
     thread_ts: str | None = None,
+    file_path: str | None = None,
+    file_title: str | None = None,
 ) -> dict[str, Any]:
     """Send a message to a channel — ONLY when confirm=True.
 
     With confirm=False (the default) nothing is sent: the tool echoes back the
-    workspace, resolved channel, and text so they can be verified first. Call again
-    with confirm=True to actually post.
+    workspace, resolved channel, text, and any attachment so they can be verified
+    first. Call again with confirm=True to actually post.
+
+    Pass `file_path` to upload a local file as an attachment. When both `text` and
+    `file_path` are given, the text becomes the file's comment so one call posts
+    both together. Uploading requires the `files:write` scope (and `im:write` to
+    attach to a DM via a user ID); check_access reports whether the token has them.
 
     Args:
         workspace: configured workspace name.
-        channel: channel ID (C…/G…/D…) or a name like '#general'.
-        text: the message body (Slack mrkdwn).
+        channel: channel ID (C…/G…/D…) or a name like '#general', or a user ID
+            (U…/W…) to DM that person.
+        text: the message body (Slack mrkdwn). May be empty when file_path is set.
         confirm: must be True to actually send; False returns a preview only.
         thread_ts: optional parent ts to reply in a thread.
+        file_path: optional path to a local file to upload as an attachment.
+        file_title: optional display title for the attachment (defaults to the filename).
     """
     channel_id = _resolve_channel(workspace, channel)
+
+    attach: Path | None = None
+    if file_path:
+        attach = Path(file_path).expanduser()
+        if not attach.is_file():
+            raise ValueError(f"file_path not found or not a file: {attach}")
+        # Fail fast, before showing a confirmable preview, if the scope is absent.
+        _require_scopes(workspace, ["files:write"], "Uploading a file attachment")
+
     preview = {
         "workspace": workspace,
         "channel_input": channel,
         "channel_id": channel_id,
         "text": text,
         "thread_ts": thread_ts,
+        "file_path": str(attach) if attach else None,
+        "file_bytes": attach.stat().st_size if attach else None,
     }
     if not confirm:
         return {
@@ -491,6 +635,29 @@ def send_message(
         }
 
     client = _client(workspace)
+    if attach:
+        conv = _conversation_for_upload(workspace, channel_id)
+        resp = client.files_upload_v2(
+            channel=conv,
+            file=str(attach),
+            filename=attach.name,
+            title=file_title or attach.name,
+            initial_comment=text or None,
+            thread_ts=thread_ts,
+        )
+        uploaded = resp.get("files") or resp.get("file")
+        file_id = None
+        if isinstance(uploaded, list) and uploaded:
+            file_id = uploaded[0].get("id")
+        elif isinstance(uploaded, dict):
+            file_id = uploaded.get("id")
+        return {
+            "sent": True,
+            **preview,
+            "channel_id": conv,
+            "file_id": file_id,
+        }
+
     resp = client.chat_postMessage(channel=channel_id, text=text, thread_ts=thread_ts)
     return {
         "sent": True,

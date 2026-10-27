@@ -49,11 +49,13 @@ def _client(workspace: str) -> WebClient:
 # channel-name -> id cache, keyed by (workspace, lowercased name)
 _channel_cache: dict[tuple[str, str], str] = {}
 
-_ID_RE = re.compile(r"^[CGD][A-Z0-9]{6,}$")
+# Slack object IDs: channels (C), private groups (G), DMs (D), and users (U/W).
+# A user ID is accepted as a channel because chat.postMessage opens a DM with it.
+_ID_RE = re.compile(r"^[CGDUW][A-Z0-9]{6,}$")
 
 
 def _resolve_channel(workspace: str, channel: str) -> str:
-    """Accept a channel ID (C…/G…/D…) or a #name/name and return the channel ID."""
+    """Accept a channel/DM ID (C…/G…/D…), a user ID (U…/W… → DM), or a #name."""
     channel = channel.strip()
     if _ID_RE.match(channel):
         return channel

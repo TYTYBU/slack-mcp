@@ -1,0 +1,36 @@
+# Slack app manifest for slack-mcp.
+#
+# Create one app PER workspace from this manifest (see README). The server uses a
+# USER token (xoxp-), so the scopes below are requested under oauth_config.user.
+# No bot scopes are needed. No "stealth"/xoxc browser tokens are used.
+#
+# Create at https://api.slack.com/apps -> "From an app manifest" -> pick workspace
+# -> paste this YAML.
+display_information:
+  name: slack-mcp (local)
+  description: Local MCP bridge for reading/searching Slack and downloading files.
+  background_color: "#2c2d30"
+
+oauth_config:
+  scopes:
+    user:
+      # --- read / search ---
+      - search:read            # search_messages
+      - channels:history       # read public channel history
+      - groups:history         # read private channel history
+      - im:history             # read DMs
+      - mpim:history           # read group DMs
+      - channels:read          # list/resolve public channels
+      - groups:read            # list/resolve private channels
+      - im:read                # list/resolve DMs
+      - mpim:read              # list/resolve group DMs
+      - users:read             # get_user by ID
+      - users:read.email       # get_user by email (users.lookupByEmail)
+      - files:read             # files.info + download url_private_download
+      # --- optional write (draft/send) ---
+      - chat:write             # send_message
+
+settings:
+  org_deploy_enabled: false
+  socket_mode_enabled: false
+  token_rotation_enabled: false

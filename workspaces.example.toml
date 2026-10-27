@@ -1,0 +1,11 @@
+# Copy to ~/.config/slack-mcp/workspaces.toml and chmod 600.
+# One [workspaces.<name>] table per workspace. <name> is what you pass as the
+# required `workspace` argument to every tool. Tokens are user tokens (xoxp-).
+
+[workspaces.workspace_a]
+token = "xoxp-REPLACE-ME"
+description = "Example Workspace A"
+
+[workspaces.workspace_b]
+token = "xoxp-REPLACE-ME"
+description = "Example Workspace B"

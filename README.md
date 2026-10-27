@@ -101,9 +101,12 @@ with `send_message(file_path=…)`. Everything else works without them.
 
 > **Adding scopes to an app you already installed** (e.g. turning on attachments
 > later): open the app at <https://api.slack.com/apps> → **App Manifest**, paste the
-> updated `manifest.yaml`, save, then **OAuth & Permissions → Reinstall to Workspace**
-> and copy the **new** `xoxp-` token into `workspaces.toml`. Do this per workspace.
-> Until then, `check_access` shows the scope as missing and upload calls fail with a
+> updated `manifest.yaml`, save, then **OAuth & Permissions → Reinstall to Workspace**.
+> The new scopes attach to your existing token — with token rotation off (this
+> manifest), the `xoxp-` token **doesn't change**, so there's usually nothing to edit
+> in `workspaces.toml`. Just run `check_access(workspace)` to confirm the scope is now
+> present; only update the token if it actually changed. Do this per workspace. Until
+> you reinstall, `check_access` shows the scope as missing and upload calls fail with a
 > clear message — read-only tools keep working.
 
 ## 3. Configure tokens
@@ -201,7 +204,7 @@ to `~/slack-downloads/myworkspace/<channel>/` and returns an inline `Image`.
 | Symptom | Likely cause / fix |
 |---|---|
 | `Slack API error: invalid_auth` / `not_authed` | Wrong/expired token, or you pasted an `xapp-`/`xoxb-` token. Use the **User OAuth Token** (`xoxp-`). |
-| `Slack API error: missing_scope` | App installed before a scope was added. Re-paste the manifest / reinstall the app, then copy the new token. |
+| `Slack API error: missing_scope` | App installed before a scope was added. Re-paste the manifest / reinstall the app; the token usually stays the same (token rotation is off), so just re-run `check_access` — only update `workspaces.toml` if it changed. |
 | `Channel '…' not found` | Not a member, wrong name, or private. Use `list_channels` to find the ID, and join the channel. |
 | `read_channel` returns 0 messages, no error | The channel is genuinely empty (common for unused `#general`). Try an active channel. |
 | Tool doesn't appear in Claude | Start a **new** Claude Code session; for Desktop, **⌘Q and reopen**. |

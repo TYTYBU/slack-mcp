@@ -32,37 +32,61 @@ Messages include file metadata: `id`, `name`, `mimetype`, `size`, `filetype`.
   `~/slack-downloads/<workspace>/<channel>/`.
 - **Other files** → saved to that same folder; the path is returned.
 
-## 1. Install dependencies
+**Channels, DMs, and users.** The `channel` argument accepts a channel ID
+(`C…`/`G…`), a DM/IM ID (`D…`), a `#name`, or a **user ID** (`U…`/`W…`). Passing a
+user ID to `send_message` opens a direct message to that person — pass **your own**
+user ID to DM yourself (get it from `get_user(workspace, "you@example.com")`).
+
+---
+
+## Prerequisites
+
+- macOS or Linux
+- [`uv`](https://docs.astral.sh/uv/) (`brew install uv`)
+- Python ≥ 3.11 (uv will fetch one if needed)
+- A **member** account on each Slack workspace you want to access
+
+## 1. Get the code + install dependencies
 
 ```bash
+git clone https://github.com/TYTYBU/slack-mcp.git ~/Projects/slack-mcp
 cd ~/Projects/slack-mcp
 uv sync
 ```
 
-## 2. Create a Slack app per workspace
+## 2. Create a Slack app — once **per workspace**
 
-Do this once **per workspace** you want to access:
+A Slack app is tied to the workspace it's created in, so repeat this for each
+workspace (selecting the right one in the picker each time).
 
 1. Go to <https://api.slack.com/apps> → **Create New App** → **From an app manifest**.
-2. Select the target workspace.
-3. Paste the contents of [`manifest.yaml`](manifest.yaml) and create the app.
-4. Open **OAuth & Permissions** → **Install to Workspace** → approve the scopes.
-   - If your workspace requires admin approval, request it; the app only needs the
-     **user** scopes in the manifest (`search:read`, `*:history`, `*:read`,
-     `files:read`, and `chat:write` for sending).
-5. Copy the **User OAuth Token** — it starts with `xoxp-`.
+2. **Select the target workspace** in the dropdown. ← the only thing that differs between workspaces.
+3. Paste the contents of [`manifest.yaml`](manifest.yaml) and continue.
+4. On the review screen click **Create and Install**, then authorize.
+   - If the workspace requires admin approval, you'll be prompted to request it.
+5. Left sidebar → **OAuth & Permissions** → copy the **User OAuth Token** (starts with `xoxp-`).
 
 The scopes requested (all **user** scopes, no bot token):
 `search:read`, `channels:history`, `groups:history`, `im:history`, `mpim:history`,
 `channels:read`, `groups:read`, `im:read`, `mpim:read`, `users:read`,
 `users:read.email`, `files:read`, `chat:write`.
 
-> Note: `search:read` and reading history only cover channels **your user account
-> can already see**. Private channels/DMs require you to be a member.
+> **Which token?** You want the **User OAuth Token** (`xoxp-`) only.
+> - ❌ **Don't** generate an *app-level token* (`xapp-`) — that's for Socket Mode,
+>   which this server doesn't use (the manifest sets `socket_mode_enabled: false`).
+> - ❌ Not a *bot token* (`xoxb-`), not a browser token (`xoxc-`/`xoxd-`).
+>
+> On the review screen, **"What it can do in Slack (13)"** = the 13 scopes above;
+> **"What it can respond to in Slack (0)"** = event subscriptions, which this
+> server doesn't use — `0` is correct.
+>
+> `search:read` and reading history only cover channels **your account can already
+> see** — private channels/DMs require you to be a member.
 
 ## 3. Configure tokens
 
-Tokens stay **out of the repo** in `~/.config/slack-mcp/workspaces.toml`:
+Tokens stay **out of the repo** in `~/.config/slack-mcp/workspaces.toml` (the repo
+only ships `workspaces.example.toml` as a template):
 
 ```bash
 mkdir -p ~/.config/slack-mcp
@@ -72,25 +96,38 @@ chmod 600 ~/.config/slack-mcp/workspaces.toml
 ```
 
 ```toml
-[workspaces.workspace_a]
+[workspaces.myworkspace]
 token = "xoxp-..."
-description = "Example Workspace A"
+description = "My Workspace"       # optional, for your reference
 
-[workspaces.workspace_b]
+[workspaces.another-lab]
 token = "xoxp-..."
-description = "Example Workspace B"
+description = "Another Lab"
 ```
 
-The `<name>` of each table (`workspace_a`, `workspace_b`) is the `workspace` value you pass to the
-tools. The server warns on stderr if the file isn't `600` or a token isn't `xoxp-`.
+- The table name (`myworkspace`, `another-lab`) is the `workspace` value you pass to
+  the tools — keep it short; letters, digits, `_` and `-` are allowed.
+- One block per workspace; names must be unique.
+- The server warns on stderr if the file isn't `600` or a token isn't `xoxp-`.
+
+> Config path can be overridden with the `SLACK_MCP_CONFIG` environment variable.
 
 ## 4. Register with Claude
 
-### Claude Code (user scope)
+### Claude Code (available in every project)
 
 ```bash
 claude mcp add --scope user slack-mcp -- uv --directory ~/Projects/slack-mcp run slack-mcp
 ```
+
+Verify:
+
+```bash
+claude mcp list        # should show: slack-mcp ... ✔ Connected
+```
+
+`--scope user` makes it available in **all** your projects/sessions. A session that
+was already open won't see it until you **start a fresh session**.
 
 ### Claude Desktop (`claude_desktop_config.json`)
 
@@ -100,38 +137,60 @@ claude mcp add --scope user slack-mcp -- uv --directory ~/Projects/slack-mcp run
 {
   "mcpServers": {
     "slack-mcp": {
-      "command": "uv",
+      "command": "/opt/homebrew/bin/uv",
       "args": ["--directory", "/Users/you/Projects/slack-mcp", "run", "slack-mcp"]
     }
   }
 }
 ```
 
-> Claude Desktop launches with a minimal `PATH` and may not find `uv`. If the
-> server fails to start, use the absolute path from `which uv` (e.g.
-> `/opt/homebrew/bin/uv`) as `"command"`. Restart Claude Desktop after editing.
+> Claude Desktop launches with a minimal `PATH` and usually **can't find `uv`** by
+> name, so use its absolute path — run `which uv` (Apple Silicon Homebrew:
+> `/opt/homebrew/bin/uv`; Intel: `/usr/local/bin/uv`). Use an absolute `--directory`
+> too. After editing, **fully quit Claude Desktop (⌘Q) and reopen it** — closing the
+> window isn't enough.
 
 ## 5. Smoke test
 
-**Direct (fastest):** exercises the tools against your real tokens.
+**Direct (fastest):** exercises the tools against your real tokens, no Claude needed.
 
 ```bash
-# list workspaces only
+# list workspaces only (no network)
 uv run python scripts/smoke_test.py
 
 # list workspaces, resolve + read a channel, (optionally) download a file
-uv run python scripts/smoke_test.py workspace_a '#general'
-uv run python scripts/smoke_test.py workspace_a '#general' F0123ABCD
+uv run python scripts/smoke_test.py myworkspace '#general'
+uv run python scripts/smoke_test.py myworkspace '#general' F0123ABCD
 ```
 
 Expected: your workspaces print, the channel resolves to an ID, the last few
 messages print (with any file metadata), and a provided image `file_id` downloads
-to `~/slack-downloads/workspace_a/<channel>/` and returns an inline `Image`.
+to `~/slack-downloads/myworkspace/<channel>/` and returns an inline `Image`.
+(An empty/unused channel prints no messages — that's not an error.)
 
 **In Claude** (after step 4), ask:
 
 > Using slack-mcp, list my Slack workspaces. Then read the last 10 messages in
-> `#general` on `workspace_a`, and download the most recent image there.
+> `#general` on `myworkspace`, and download the most recent image there.
+
+## Troubleshooting
+
+| Symptom | Likely cause / fix |
+|---|---|
+| `Slack API error: invalid_auth` / `not_authed` | Wrong/expired token, or you pasted an `xapp-`/`xoxb-` token. Use the **User OAuth Token** (`xoxp-`). |
+| `Slack API error: missing_scope` | App installed before a scope was added. Re-paste the manifest / reinstall the app, then copy the new token. |
+| `Channel '…' not found` | Not a member, wrong name, or private. Use `list_channels` to find the ID, and join the channel. |
+| `read_channel` returns 0 messages, no error | The channel is genuinely empty (common for unused `#general`). Try an active channel. |
+| Tool doesn't appear in Claude | Start a **new** Claude Code session; for Desktop, **⌘Q and reopen**. |
+| Desktop server fails to start | Use the **absolute** `uv` path in `claude_desktop_config.json` (`which uv`). |
+| `Config file not found` | Create `~/.config/slack-mcp/workspaces.toml` (step 3), or set `SLACK_MCP_CONFIG`. |
+
+## Using alongside the official Slack connector
+
+Both can be enabled at once — tool names don't collide, so nothing breaks. The only
+ambiguity is which Claude picks for a generic "check Slack" request. Name the server
+explicitly ("using **slack-mcp**, …") when you want multi-workspace access or file
+downloads, or disable the official connector if this one covers your needs.
 
 ## Security notes
 
